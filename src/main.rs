@@ -4,15 +4,15 @@
 use cortex_m_rt::entry;
 use nb::block;
 use panic_rtt_target as _;
-use rtt_target::{rtt_init_print, rprintln};
+use rtt_target::{rprintln, rtt_init_print};
+use stm32f1xx_hal::afio::MAPR;
+use stm32f1xx_hal::rcc::Clocks;
+use stm32f1xx_hal::serial::{Instance, Pins};
 use stm32f1xx_hal::{
     pac::{self, USART1},
     prelude::*,
     serial::{Config, Rx, Serial, Tx},
 };
-use stm32f1xx_hal::afio::MAPR;
-use stm32f1xx_hal::rcc::Clocks;
-use stm32f1xx_hal::serial::{Instance, Pins};
 // OSOyoo WiFi Shield v1.3 — ESP-12S AT command interface
 //
 // Shield jumper options:
@@ -32,11 +32,9 @@ enum EspResponse {
     Error,
     Fail,
     WifiGotIp,
-    Ip([u8;15], usize), // ip, len
+    Ip([u8; 15], usize), // ip, len
     Other,
 }
-
-
 
 fn parse_line(line: &[u8]) -> EspResponse {
     match line {
@@ -45,11 +43,11 @@ fn parse_line(line: &[u8]) -> EspResponse {
         b"FAIL\r\n" => EspResponse::Fail,
         b"WIFI GOT IP\r\n" => EspResponse::WifiGotIp,
         l if l.starts_with(b"+CIFSR:STAIP,\"") => {
-            let mut ip = [0u8;15];
-            let ip_len = l.len() - 3-14;
+            let mut ip = [0u8; 15];
+            let ip_len = l.len() - 3 - 14;
             ip[..ip_len].copy_from_slice(&l[14..l.len() - 3]);
             EspResponse::Ip(ip, ip_len)
-        },
+        }
         _ => EspResponse::Other,
     }
 }
@@ -71,16 +69,13 @@ impl<USART: Instance> Esp<USART> {
         );
 
         let (tx, rx) = serial.split();
-        Self {
-            tx,
-            rx,
-        }
+        Self { tx, rx }
     }
 
     // TODO: error type
     fn init(&mut self) -> Result<(), ()> {
         self.send(b"AT\r\n");
-        let mut buf = [0u8;128];
+        let mut buf = [0u8; 128];
 
         let mut resp: EspResponse;
 
@@ -96,27 +91,27 @@ impl<USART: Instance> Esp<USART> {
                 EspResponse::Ok => {
                     rprintln!("OK");
                     break;
-                },
+                }
                 EspResponse::Error => {
                     rprintln!("ERROR");
                     break;
-                },
+                }
                 EspResponse::Fail => {
                     rprintln!("FAIL");
                     break;
-                },
+                }
                 EspResponse::WifiGotIp => {
                     rprintln!("WIFI GOT IP");
-                },
+                }
                 EspResponse::Other => {}
-                _ => {},
+                _ => {}
             }
         }
 
         Ok(())
     }
 
-    fn connect_wifi(&mut self, ssid: &str, pass: &str) -> Result<(),()> {
+    fn connect_wifi(&mut self, ssid: &str, pass: &str) -> Result<(), ()> {
         self.send(b"AT+CWJAP_CUR=\"");
         self.send(SSID.as_bytes());
         self.send(b"\",\"");
@@ -126,7 +121,7 @@ impl<USART: Instance> Esp<USART> {
 
         // TODO: dry
 
-        let mut buf = [0u8;128];
+        let mut buf = [0u8; 128];
 
         let mut resp: EspResponse;
 
@@ -141,25 +136,25 @@ impl<USART: Instance> Esp<USART> {
                 EspResponse::Ok => {
                     rprintln!("OK");
                     break;
-                },
+                }
                 EspResponse::Error => {
                     rprintln!("ERROR");
                     break;
-                },
+                }
                 EspResponse::Fail => {
                     rprintln!("FAIL");
                     break;
-                },
+                }
                 EspResponse::WifiGotIp => {
                     rprintln!("WIFI GOT IP");
-                },
-                EspResponse::Other => {},
+                }
+                EspResponse::Other => {}
                 _ => {}
             }
         }
 
         if !matches!(resp, EspResponse::Ok) {
-            return Err(())
+            return Err(());
         }
 
         self.send(b"AT+CIFSR\r\n");
@@ -170,11 +165,14 @@ impl<USART: Instance> Esp<USART> {
 
             match parse_line(line) {
                 EspResponse::Ip(ip, ip_len) => {
-                    rprintln!("WiFi Connected. IP {:?}", core::str::from_utf8(&ip[0..ip_len]).unwrap_or("?"));
-                },
+                    rprintln!(
+                        "WiFi Connected. IP {:?}",
+                        core::str::from_utf8(&ip[0..ip_len]).unwrap_or("?")
+                    );
+                }
                 EspResponse::Ok => {
                     break;
-                },
+                }
                 _ => {} // TODO: not handling errors
             }
         }
