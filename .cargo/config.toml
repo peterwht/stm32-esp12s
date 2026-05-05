@@ -1,0 +1,8 @@
+[build]
+target = "thumbv7m-none-eabi"  # Cortex-M3 (STM32F103RB)
+
+[target.thumbv7m-none-eabi]
+runner = "probe-rs run --chip STM32F103RB"
+rustflags = [
+  "-C", "linker=rust-lld",
+]

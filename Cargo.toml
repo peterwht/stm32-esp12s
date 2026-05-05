@@ -1,0 +1,23 @@
+[package]
+name = "stm32-esp12s"
+version = "0.1.0"
+edition = "2024"
+authors = ["Peter White <petras9789@gmail.com>"]
+
+[dependencies]
+cortex-m = { version = "0.7.6", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+panic-halt = "1.0.0"
+rtt-target = "0.5"
+stm32f1xx-hal = { version = "0.10.0", features = ["stm32f103"] }
+nb = "1.1.0"
+
+[[bin]]
+name = "stm32-esp12s"
+test = false
+bench = false
+
+[profile.release]
+codegen-units = 1
+debug = true
+lto = true
