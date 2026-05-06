@@ -24,6 +24,9 @@ use stm32f1xx_hal::{
 // With hardware UART jumpers set, run manual wires:
 //   Shield E_RX → D8 (PA9, USART1 TX)
 //   Shield E_TX → D2 (PA10, USART1 RX)
+//
+// USART1 supports interrupt on read by setting the RXNEIE bit in the USART_CR1 register
+//
 
 const SSID: &str = env!("WIFI_SSID");
 const PASS: &str = env!("WIFI_PASS");
@@ -40,7 +43,9 @@ enum EspResponse {
 fn parse_usize_from_slice(data: &[u8]) -> usize {
     let mut n: usize = 0;
     for &b in data {
-        if b < b'0' || b > b'9' { break; }
+        if b < b'0' || b > b'9' {
+            break;
+        }
         n = n * 10 + (b - b'0') as usize;
     }
     n
@@ -230,14 +235,13 @@ impl<USART: Instance> Esp<USART> {
         // TODO: need timeout
         loop {
             let byte = block!(self.rx.read()).unwrap(); //TODO: unwrap
-            // rprintln!("matching {:?}", core::str::from_utf8(&byte.to_be_bytes()).unwrap_or("?"));
             if byte == pattern[found as usize] {
                 found += 1;
             } else {
                 found = 0;
                 // recheck if current byte matches pattern start
                 if byte == pattern[found as usize] {
-                   found = 1;
+                    found = 1;
                 }
             }
 
@@ -248,8 +252,6 @@ impl<USART: Instance> Esp<USART> {
 
         true
     }
-
-
 
     fn read_byte(&mut self) -> u8 {
         loop {
@@ -295,7 +297,10 @@ impl<USART: Instance> Esp<USART> {
         loop {
             if self.find(b"+IPD,") {
                 let len = self.handle_ipd(&mut body_buf);
-                rprintln!("body: {:?}", core::str::from_utf8(&body_buf[..len]).unwrap_or("?"));
+                rprintln!(
+                    "body: {:?}",
+                    core::str::from_utf8(&body_buf[..len]).unwrap_or("?")
+                );
             }
         }
     }
@@ -342,7 +347,6 @@ impl<USART: Instance> Esp<USART> {
         Some((parsed, terminator))
     }
 }
-
 
 #[entry]
 fn main() -> ! {
