@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use cortex_m::asm;
 use cortex_m_rt::entry;
 use nb::block;
 use panic_rtt_target as _;
@@ -41,7 +42,7 @@ fn parse_line(line: &[u8]) -> EspResponse {
         b"OK\r\n" => EspResponse::Ok,
         b"ERROR\r\n" => EspResponse::Error,
         b"FAIL\r\n" => EspResponse::Fail,
-        b"WIFI GOT IP\r\n" => EspResponse::WifiGotIp,
+        b"WIFI GOT IP\r\n" => EspResponse::WifiGotIp, // TODO: probably don't need
         l if l.starts_with(b"+CIFSR:STAIP,\"") => {
             let mut ip = [0u8; 15];
             let ip_len = l.len() - 3 - 14;
@@ -81,7 +82,7 @@ impl<USART: Instance> Esp<USART> {
 
         // TODO: improve, timeout, error handling, refactor parsing, etc.
         loop {
-            let len = self.read_line(&mut buf);
+            let len = self.read_line(&mut buf, false);
             rprintln!("len: {}", len);
             let line = &buf[..len];
             rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
@@ -127,7 +128,7 @@ impl<USART: Instance> Esp<USART> {
 
         // TODO: improve, timeout, error handling, refactor parsing, etc.
         loop {
-            let len = self.read_line(&mut buf);
+            let len = self.read_line(&mut buf, false);
             let line = &buf[..len];
             rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
 
@@ -159,7 +160,7 @@ impl<USART: Instance> Esp<USART> {
 
         self.send(b"AT+CIFSR\r\n");
         loop {
-            let len = self.read_line(&mut buf);
+            let len = self.read_line(&mut buf, false);
             let line = &buf[..len];
             rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
 
@@ -180,17 +181,126 @@ impl<USART: Instance> Esp<USART> {
         Ok(())
     }
 
+    fn configure_server(&mut self, port: &[u8]) {
+        self.send(b"AT+CIPMUX=1\r\n");
+
+        let mut buf = [0u8; 128];
+        let mut resp: EspResponse;
+
+        loop {
+            let len = self.read_line(&mut buf, false);
+            let line = &buf[..len];
+            rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
+
+            resp = parse_line(line);
+            if let EspResponse::Ok = resp {
+                break;
+            }
+        }
+
+        self.send(b"AT+CIPSERVER=1,");
+        self.send(&port);
+        self.send(b"\r\n");
+
+        loop {
+            let len = self.read_line(&mut buf, false );
+            let line = &buf[..len];
+            rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
+
+            resp = parse_line(line);
+            if let EspResponse::Ok = resp {
+                break;
+            }
+        }
+    }
+
+    fn find(&mut self, pattern: &[u8]) -> bool {
+        let len = pattern.len();
+        let mut found = 0;
+
+        // TODO: need timeout
+        loop {
+            let byte = block!(self.rx.read()).unwrap(); //TODO: unwrap
+            // rprintln!("matching {:?}", core::str::from_utf8(&byte.to_be_bytes()).unwrap_or("?"));
+            if byte == pattern[found as usize] {
+                found += 1;
+            } else {
+                found = 0;
+                // recheck if current byte matches pattern start
+                if byte == pattern[found as usize] {
+                   found = 1;
+                }
+            }
+
+            if found == len {
+                break;
+            }
+        }
+
+        true
+    }
+
+
+
+    fn listen_loop(&mut self) {
+        loop {
+            if self.rx.is_rx_not_empty() {
+                if self.find(b"+IPD,") {
+                    rprintln!("FOUND IPD");
+                };
+
+                let _ = block!(self.rx.read()); // <ID>
+                let _ = block!(self.rx.read()); // ','
+
+                let (bytes_received, _) = self.parse_u32().unwrap_or((0, b'0'));
+                rprintln!("bytes_received: {}", bytes_received);
+                if self.find(b"Content-Length: ") {
+                    rprintln!("Content length found");
+                }
+
+                let (content_length, _) = self.parse_u32().unwrap_or((0, b'0'));
+                rprintln!("content_length: {}", content_length);
+
+                // if self.find(b"data=") {
+                //     rprintln!("data found");
+                // }
+
+                for _ in 0..100 {
+                    rprintln!("{:?}", core::str::from_utf8(&block!(self.rx.read()).expect("not empty").to_be_bytes()).unwrap_or("?"));
+                }
+                // rprintln!("{:?}", core::str::from_utf8(&block!(self.rx.read()).expect("not empty").to_be_bytes()).unwrap_or("?"));
+                // rprintln!("{:?}", core::str::from_utf8(&block!(self.rx.read()).expect("not empty").to_be_bytes()).unwrap_or("?"));
+                // rprintln!("{:?}", core::str::from_utf8(&block!(self.rx.read()).expect("not empty").to_be_bytes()).unwrap_or("?"));
+                // rprintln!("{:?}", core::str::from_utf8(&block!(self.rx.read()).expect("not empty").to_be_bytes()).unwrap_or("?"));
+                // rprintln!("{:?}", core::str::from_utf8(&block!(self.rx.read()).expect("not empty").to_be_bytes()).unwrap_or("?"));
+                // rprintln!("{:?}", core::str::from_utf8(&block!(self.rx.read()).expect("not empty").to_be_bytes()).unwrap_or("?"));
+                // rprintln!("{:?}", core::str::from_utf8(&block!(self.rx.read()).expect("not empty").to_be_bytes()).unwrap_or("?"));
+                // rprintln!("{:?}", core::str::from_utf8(&block!(self.rx.read()).expect("not empty").to_be_bytes()).unwrap_or("?"));
+                // let len = self.read_line(&mut buf, true);
+                // let line = &buf[..len];
+                // rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
+                break;
+            }
+            // for _ in 0..5_000 {
+            //     asm::nop();
+            // }
+        }
+    }
+
     fn send(&mut self, data: &[u8]) {
         for byte in data {
             block!(self.tx.write(*byte)).ok();
         }
     }
 
-    fn read_line(&mut self, buf: &mut [u8]) -> usize {
+    fn read_line(&mut self, buf: &mut [u8], debug: bool) -> usize {
         let mut i = 0;
         while i < buf.len() {
             match block!(self.rx.read()) {
                 Ok(b) => {
+                    if debug {
+                        // rprintln!("B: {:?}", core::str::from_utf8(&b.to_be_bytes()).unwrap_or("?"));
+                    }
                     buf[i] = b;
                     i += 1;
                     if i >= 2 && buf[i - 2] == b'\r' && buf[i - 1] == b'\n' {
@@ -202,7 +312,27 @@ impl<USART: Instance> Esp<USART> {
         }
         i
     }
+
+    // return type is (parsed_int, terminator byte [first non-integer])
+    fn parse_u32(&mut self) -> Option<(u32, u8)> {
+        let mut parsed = 0;
+        let terminator;
+
+        loop {
+            let byte = block!(self.rx.read()).unwrap_or(b'?'); // if read failed, no more integer to parse
+
+            if byte < b'0' || byte > b'9' {
+                terminator = byte;
+                break;
+            }
+
+            parsed = parsed * 10 + (byte - b'0') as u32
+        }
+
+        Some((parsed, terminator))
+    }
 }
+
 
 #[entry]
 fn main() -> ! {
@@ -229,6 +359,9 @@ fn main() -> ! {
     esp.init().expect("Error initializing serial instance");
     rprintln!("Connecting Wifi");
     esp.connect_wifi(SSID, PASS).expect("Error connecting wifi");
+    esp.configure_server(b"80");
+
+    esp.listen_loop();
 
     loop {}
 }
