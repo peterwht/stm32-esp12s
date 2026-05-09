@@ -35,6 +35,8 @@ const PASS: &str = env!("WIFI_PASS");
 
 // Ring buffer, start at 64 bytes considering 9600 baud from esp;
 const USART1_RB_SIZE: usize = 64;
+
+// Ring Buffer Producer
 static PRODUCER: Mutex<RefCell<Option<Producer<'static, USART1_RB_SIZE>>>> =
     Mutex::new(RefCell::new(None));
 
@@ -47,33 +49,6 @@ enum EspResponse {
     WifiGotIp,
     Ip([u8; 15], usize), // ip, len
     Other,
-}
-
-fn parse_usize_from_slice(data: &[u8]) -> usize {
-    let mut n: usize = 0;
-    for &b in data {
-        if b < b'0' || b > b'9' {
-            break;
-        }
-        n = n * 10 + (b - b'0') as usize;
-    }
-    n
-}
-
-fn parse_line(line: &[u8]) -> EspResponse {
-    match line {
-        b"OK\r\n" => EspResponse::Ok,
-        b"ERROR\r\n" => EspResponse::Error,
-        b"FAIL\r\n" => EspResponse::Fail,
-        b"WIFI GOT IP\r\n" => EspResponse::WifiGotIp, // TODO: probably don't need
-        l if l.starts_with(b"+CIFSR:STAIP,\"") => {
-            let mut ip = [0u8; 15];
-            let ip_len = l.len() - 3 - 14;
-            ip[..ip_len].copy_from_slice(&l[14..l.len() - 3]);
-            EspResponse::Ip(ip, ip_len)
-        }
-        _ => EspResponse::Other,
-    }
 }
 
 // TODO: need status for esp
@@ -97,11 +72,9 @@ impl<USART: Instance> Esp<USART> {
         // TODO: improve, timeout, error handling, refactor parsing, etc.
         loop {
             let len = self.read_line(&mut buf);
-            // rprintln!("len: {}", len);
             let line = &buf[..len];
-            // rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
 
-            resp = parse_line(line);
+            resp = Self::parse_line(line);
             match resp {
                 EspResponse::Ok => {
                     rprintln!("OK");
@@ -144,9 +117,8 @@ impl<USART: Instance> Esp<USART> {
         loop {
             let len = self.read_line(&mut buf);
             let line = &buf[..len];
-            // rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
 
-            resp = parse_line(line);
+            resp = Self::parse_line(line);
             match resp {
                 EspResponse::Ok => {
                     rprintln!("OK");
@@ -176,9 +148,8 @@ impl<USART: Instance> Esp<USART> {
         loop {
             let len = self.read_line(&mut buf);
             let line = &buf[..len];
-            // rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
 
-            match parse_line(line) {
+            match Self::parse_line(line) {
                 EspResponse::Ip(ip, ip_len) => {
                     rprintln!(
                         "WiFi Connected. IP {:?}",
@@ -204,9 +175,8 @@ impl<USART: Instance> Esp<USART> {
         loop {
             let len = self.read_line(&mut buf);
             let line = &buf[..len];
-            // rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
 
-            resp = parse_line(line);
+            resp = Self::parse_line(line);
             if let EspResponse::Ok = resp {
                 break;
             }
@@ -219,16 +189,57 @@ impl<USART: Instance> Esp<USART> {
         loop {
             let len = self.read_line(&mut buf);
             let line = &buf[..len];
-            // rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
 
-            resp = parse_line(line);
+            resp = Self::parse_line(line);
             if let EspResponse::Ok = resp {
                 break;
             }
         }
     }
 
-    fn find(&mut self, pattern: &[u8]) -> bool {
+    fn listen_loop(&mut self) {
+        let mut body_buf = [0u8; 64];
+
+        loop {
+            self.wait_for(b"+IPD,");
+            let len = self.handle_ipd(&mut body_buf);
+            rprintln!(
+                "body: {:?}",
+                core::str::from_utf8(&body_buf[..len]).unwrap_or("?")
+            );
+        }
+    }
+
+    fn handle_ipd(&mut self, body_buf: &mut [u8]) -> usize {
+        self.read_byte(); // conn id digit
+        self.read_byte(); // ','
+        self.parse_u32(); // IPD length, terminator ':' consumed
+
+        let mut content_length: usize = 0;
+        let mut line_buf = [0u8; 128];
+
+        loop {
+            let len = self.read_line(&mut line_buf);
+            let line = &line_buf[..len];
+
+            if line == b"\r\n" {
+                break;
+            }
+
+            if line.starts_with(b"Content-Length: ") {
+                content_length = Self::parse_usize_from_slice(&line[16..]);
+            }
+        }
+
+        let read_len = content_length.min(body_buf.len());
+        for i in 0..read_len {
+            body_buf[i] = self.read_byte();
+        }
+
+        read_len
+    }
+
+    fn wait_for(&mut self, pattern: &[u8]) {
         let len = pattern.len();
         let mut found = 0;
 
@@ -250,65 +261,7 @@ impl<USART: Instance> Esp<USART> {
                 }
             }
         }
-
-        true
     }
-
-    fn read_byte(&mut self) -> u8 {
-        loop {
-            match self.rb.read_byte() {
-                Some(b) => return b,
-                None => {}
-            }
-        }
-    }
-
-    fn handle_ipd(&mut self, body_buf: &mut [u8]) -> usize {
-        self.read_byte(); // conn id digit
-        self.read_byte(); // ','
-        self.parse_u32(); // IPD length, terminator ':' consumed
-
-        let mut content_length: usize = 0;
-        let mut line_buf = [0u8; 128];
-
-        loop {
-            let len = self.read_line(&mut line_buf);
-            let line = &line_buf[..len];
-
-            if line == b"\r\n" {
-                break;
-            }
-
-            if line.starts_with(b"Content-Length: ") {
-                content_length = parse_usize_from_slice(&line[16..]);
-            }
-        }
-
-        let read_len = content_length.min(body_buf.len());
-        for i in 0..read_len {
-            body_buf[i] = self.read_byte();
-        }
-
-        read_len
-    }
-
-    fn listen_loop(&mut self) {
-        let mut body_buf = [0u8; 64];
-
-        loop {
-            if self.find(b"+IPD,") {
-                let len = self.handle_ipd(&mut body_buf);
-                rprintln!(
-                    "body: {:?}",
-                    core::str::from_utf8(&body_buf[..len]).unwrap_or("?")
-                );
-            }
-        }
-    }
-
-    // fn enable_interrupt_listening(&mut self) {
-    //     self.rx.listen();
-    // }
 
     fn send(&mut self, data: &[u8]) {
         for byte in data {
@@ -333,23 +286,59 @@ impl<USART: Instance> Esp<USART> {
         i
     }
 
+    fn read_byte(&mut self) -> u8 {
+        loop {
+            match self.rb.read_byte() {
+                Some(b) => return b,
+                None => {}
+            }
+        }
+    }
+
     // return type is (parsed_int, terminator byte [first non-integer])
     fn parse_u32(&mut self) -> Option<(u32, u8)> {
         let mut parsed = 0;
         let terminator;
 
         loop {
-            let byte = self.rb.read_byte().unwrap_or(b'?'); // if read failed, no more integer to parse
+            if let Some(byte) = self.rb.read_byte() {
+                if byte < b'0' || byte > b'9' {
+                    terminator = byte;
+                    break;
+                }
 
-            if byte < b'0' || byte > b'9' {
-                terminator = byte;
-                break;
+                parsed = parsed * 10 + (byte - b'0') as u32
             }
-
-            parsed = parsed * 10 + (byte - b'0') as u32
         }
 
         Some((parsed, terminator))
+    }
+
+    fn parse_usize_from_slice(data: &[u8]) -> usize {
+        let mut n: usize = 0;
+        for &b in data {
+            if b < b'0' || b > b'9' {
+                break;
+            }
+            n = n * 10 + (b - b'0') as usize;
+        }
+        n
+    }
+
+    fn parse_line(line: &[u8]) -> EspResponse {
+        match line {
+            b"OK\r\n" => EspResponse::Ok,
+            b"ERROR\r\n" => EspResponse::Error,
+            b"FAIL\r\n" => EspResponse::Fail,
+            b"WIFI GOT IP\r\n" => EspResponse::WifiGotIp, // TODO: probably don't need
+            l if l.starts_with(b"+CIFSR:STAIP,\"") => {
+                let mut ip = [0u8; 15];
+                let ip_len = l.len() - 3 - 14;
+                ip[..ip_len].copy_from_slice(&l[14..l.len() - 3]);
+                EspResponse::Ip(ip, ip_len)
+            }
+            _ => EspResponse::Other,
+        }
     }
 }
 
@@ -360,25 +349,15 @@ fn main() -> ! {
     rprintln!("SSID & PASS: {:?} {:?}", SSID, PASS);
 
     let dp = pac::Peripherals::take().unwrap();
-
     let mut flash = dp.FLASH.constrain();
-    let rcc = dp.RCC.constrain();
     let mut afio = dp.AFIO.constrain();
+    let rcc = dp.RCC.constrain();
     let clocks = rcc.cfgr.freeze(&mut flash.acr);
-
     let mut gpioa = dp.GPIOA.split();
 
     // USART1: PA9 (TX), PA10 (RX) — no ST-Link conflict
     let tx = gpioa.pa9.into_alternate_push_pull(&mut gpioa.crh);
     let rx = gpioa.pa10;
-
-    let (producer, consumer) = unsafe {
-        static mut RB: RingBuffer<USART1_RB_SIZE> = RingBuffer::new();
-        // `RB` is only accessible in this scope
-        // and `main` is only called once.
-        #[allow(static_mut_refs)]
-        RB.split()
-    };
 
     let serial = Serial::new(
         dp.USART1,
@@ -388,15 +367,23 @@ fn main() -> ! {
         &clocks,
     );
 
-    unsafe { cortex_m::interrupt::enable() };
     let (tx, mut rx) = serial.split();
-    rx.listen();
-    unsafe { pac::NVIC::unmask(pac::Interrupt::USART1) };
 
+    let (producer, consumer) = unsafe {
+        static mut RB: RingBuffer<USART1_RB_SIZE> = RingBuffer::new();
+        // `RB` is only accessible in this scope
+        // and `main` is only called once.
+        #[allow(static_mut_refs)]
+        RB.split()
+    };
+
+    // enable RXNEIE, store rx and producer in statics, unmask USART1 in NVIC
+    rx.listen();
     free(|cs| {
         PRODUCER.borrow(cs).replace(Some(producer));
         USART1_RX.borrow(cs).replace(Some(rx));
     });
+    unsafe { pac::NVIC::unmask(pac::Interrupt::USART1) };
 
     rprintln!("Setting up serial");
     let mut esp = Esp::new(tx, consumer);
@@ -407,7 +394,6 @@ fn main() -> ! {
     esp.connect_wifi(SSID, PASS).expect("Error connecting wifi");
     rprintln!("wifi connected");
     esp.configure_server(b"80");
-
     rprintln!("server configured");
     esp.listen_loop();
 
@@ -416,7 +402,6 @@ fn main() -> ! {
 
 #[stm32f1xx_hal::pac::interrupt]
 fn USART1() {
-    // rprintln!("in interrupt");
     free(|cs| {
         let mut rx = USART1_RX.borrow(cs).borrow_mut();
         let mut producer = PRODUCER.borrow(cs).borrow_mut();
