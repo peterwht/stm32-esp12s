@@ -170,6 +170,7 @@ dependencies = [
 [[package]]
 name = "ring-buffer"
 version = "0.1.0"
+source = "git+https://github.com/peterwht/ring-buffer#ae8b1539582fbd417cc1ffe5c4f9708940cdf23a"
 
 [[package]]
 name = "rtt-target"
