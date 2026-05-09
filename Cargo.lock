@@ -168,6 +168,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ring-buffer"
+version = "0.1.0"
+
+[[package]]
 name = "rtt-target"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -215,6 +219,7 @@ dependencies = [
  "cortex-m-rt",
  "nb 1.1.0",
  "panic-rtt-target",
+ "ring-buffer",
  "rtt-target",
  "stm32f1xx-hal",
 ]

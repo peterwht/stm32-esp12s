@@ -1,19 +1,21 @@
 #![no_std]
 #![no_main]
 
-use cortex_m::asm;
+use core::cell::RefCell;
+use cortex_m::interrupt::{Mutex, free};
 use cortex_m_rt::entry;
 use nb::block;
 use panic_rtt_target as _;
+use ring_buffer::{Consumer, Producer, RingBuffer};
 use rtt_target::{rprintln, rtt_init_print};
-use stm32f1xx_hal::afio::MAPR;
-use stm32f1xx_hal::rcc::Clocks;
-use stm32f1xx_hal::serial::{Instance, Pins};
+use stm32f1xx_hal::pac::USART1;
+use stm32f1xx_hal::serial::Instance;
 use stm32f1xx_hal::{
-    pac::{self, USART1},
+    pac::{self, interrupt},
     prelude::*,
     serial::{Config, Rx, Serial, Tx},
 };
+
 // OSOyoo WiFi Shield v1.3 — ESP-12S AT command interface
 //
 // Shield jumper options:
@@ -30,6 +32,13 @@ use stm32f1xx_hal::{
 
 const SSID: &str = env!("WIFI_SSID");
 const PASS: &str = env!("WIFI_PASS");
+
+// Ring buffer, start at 64 bytes considering 9600 baud from esp;
+const USART1_RB_SIZE: usize = 64;
+static PRODUCER: Mutex<RefCell<Option<Producer<'static, USART1_RB_SIZE>>>> =
+    Mutex::new(RefCell::new(None));
+
+static USART1_RX: Mutex<RefCell<Option<Rx<USART1>>>> = Mutex::new(RefCell::new(None));
 
 enum EspResponse {
     Ok,
@@ -70,21 +79,12 @@ fn parse_line(line: &[u8]) -> EspResponse {
 // TODO: need status for esp
 struct Esp<USART> {
     tx: Tx<USART>,
-    rx: Rx<USART>,
+    rb: Consumer<'static, USART1_RB_SIZE>,
 }
 
 impl<USART: Instance> Esp<USART> {
-    fn new<PINS: Pins<USART>>(usart: USART, pins: PINS, mapr: &mut MAPR, clocks: &Clocks) -> Self {
-        let serial = Serial::new(
-            usart,
-            pins,
-            mapr,
-            Config::default().baudrate(9_600.bps()),
-            &clocks,
-        );
-
-        let (tx, rx) = serial.split();
-        Self { tx, rx }
+    fn new(tx: Tx<USART>, consumer: Consumer<'static, USART1_RB_SIZE>) -> Self {
+        Self { tx, rb: consumer }
     }
 
     // TODO: error type
@@ -97,9 +97,9 @@ impl<USART: Instance> Esp<USART> {
         // TODO: improve, timeout, error handling, refactor parsing, etc.
         loop {
             let len = self.read_line(&mut buf);
-            rprintln!("len: {}", len);
+            // rprintln!("len: {}", len);
             let line = &buf[..len];
-            rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
+            // rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
 
             resp = parse_line(line);
             match resp {
@@ -144,7 +144,7 @@ impl<USART: Instance> Esp<USART> {
         loop {
             let len = self.read_line(&mut buf);
             let line = &buf[..len];
-            rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
+            // rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
 
             resp = parse_line(line);
             match resp {
@@ -176,7 +176,7 @@ impl<USART: Instance> Esp<USART> {
         loop {
             let len = self.read_line(&mut buf);
             let line = &buf[..len];
-            rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
+            // rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
 
             match parse_line(line) {
                 EspResponse::Ip(ip, ip_len) => {
@@ -204,7 +204,7 @@ impl<USART: Instance> Esp<USART> {
         loop {
             let len = self.read_line(&mut buf);
             let line = &buf[..len];
-            rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
+            // rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
 
             resp = parse_line(line);
             if let EspResponse::Ok = resp {
@@ -219,7 +219,7 @@ impl<USART: Instance> Esp<USART> {
         loop {
             let len = self.read_line(&mut buf);
             let line = &buf[..len];
-            rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
+            // rprintln!("line: {:?}", core::str::from_utf8(line).unwrap_or("?"));
 
             resp = parse_line(line);
             if let EspResponse::Ok = resp {
@@ -234,19 +234,20 @@ impl<USART: Instance> Esp<USART> {
 
         // TODO: need timeout
         loop {
-            let byte = block!(self.rx.read()).unwrap(); //TODO: unwrap
-            if byte == pattern[found as usize] {
-                found += 1;
-            } else {
-                found = 0;
-                // recheck if current byte matches pattern start
+            if let Some(byte) = self.rb.read_byte() {
                 if byte == pattern[found as usize] {
-                    found = 1;
+                    found += 1;
+                } else {
+                    found = 0;
+                    // recheck if current byte matches pattern start
+                    if byte == pattern[found as usize] {
+                        found = 1;
+                    }
                 }
-            }
 
-            if found == len {
-                break;
+                if found == len {
+                    break;
+                }
             }
         }
 
@@ -255,9 +256,9 @@ impl<USART: Instance> Esp<USART> {
 
     fn read_byte(&mut self) -> u8 {
         loop {
-            match block!(self.rx.read()) {
-                Ok(b) => return b,
-                Err(_) => {}
+            match self.rb.read_byte() {
+                Some(b) => return b,
+                None => {}
             }
         }
     }
@@ -305,6 +306,10 @@ impl<USART: Instance> Esp<USART> {
         }
     }
 
+    // fn enable_interrupt_listening(&mut self) {
+    //     self.rx.listen();
+    // }
+
     fn send(&mut self, data: &[u8]) {
         for byte in data {
             block!(self.tx.write(*byte)).ok();
@@ -314,15 +319,15 @@ impl<USART: Instance> Esp<USART> {
     fn read_line(&mut self, buf: &mut [u8]) -> usize {
         let mut i = 0;
         while i < buf.len() {
-            match block!(self.rx.read()) {
-                Ok(b) => {
+            match self.rb.read_byte() {
+                Some(b) => {
                     buf[i] = b;
                     i += 1;
                     if i >= 2 && buf[i - 2] == b'\r' && buf[i - 1] == b'\n' {
                         break;
                     }
                 }
-                Err(_) => {}
+                None => {}
             }
         }
         i
@@ -334,7 +339,7 @@ impl<USART: Instance> Esp<USART> {
         let terminator;
 
         loop {
-            let byte = block!(self.rx.read()).unwrap_or(b'?'); // if read failed, no more integer to parse
+            let byte = self.rb.read_byte().unwrap_or(b'?'); // if read failed, no more integer to parse
 
             if byte < b'0' || byte > b'9' {
                 terminator = byte;
@@ -352,6 +357,7 @@ impl<USART: Instance> Esp<USART> {
 fn main() -> ! {
     rtt_init_print!();
     rprintln!("STM32 ESP-12S starting...");
+    rprintln!("SSID & PASS: {:?} {:?}", SSID, PASS);
 
     let dp = pac::Peripherals::take().unwrap();
 
@@ -366,16 +372,64 @@ fn main() -> ! {
     let tx = gpioa.pa9.into_alternate_push_pull(&mut gpioa.crh);
     let rx = gpioa.pa10;
 
+    let (producer, consumer) = unsafe {
+        static mut RB: RingBuffer<USART1_RB_SIZE> = RingBuffer::new();
+        // `RB` is only accessible in this scope
+        // and `main` is only called once.
+        #[allow(static_mut_refs)]
+        RB.split()
+    };
+
+    let serial = Serial::new(
+        dp.USART1,
+        (tx, rx),
+        &mut afio.mapr,
+        Config::default().baudrate(9_600.bps()),
+        &clocks,
+    );
+
+    unsafe { cortex_m::interrupt::enable() };
+    let (tx, mut rx) = serial.split();
+    rx.listen();
+    unsafe { pac::NVIC::unmask(pac::Interrupt::USART1) };
+
+    free(|cs| {
+        PRODUCER.borrow(cs).replace(Some(producer));
+        USART1_RX.borrow(cs).replace(Some(rx));
+    });
+
     rprintln!("Setting up serial");
-    let mut esp = Esp::new(dp.USART1, (tx, rx), &mut afio.mapr, &clocks);
+    let mut esp = Esp::new(tx, consumer);
 
     rprintln!("Initializing ESP connection");
     esp.init().expect("Error initializing serial instance");
     rprintln!("Connecting Wifi");
     esp.connect_wifi(SSID, PASS).expect("Error connecting wifi");
+    rprintln!("wifi connected");
     esp.configure_server(b"80");
 
+    rprintln!("server configured");
     esp.listen_loop();
 
     loop {}
+}
+
+#[stm32f1xx_hal::pac::interrupt]
+fn USART1() {
+    // rprintln!("in interrupt");
+    free(|cs| {
+        let mut rx = USART1_RX.borrow(cs).borrow_mut();
+        let mut producer = PRODUCER.borrow(cs).borrow_mut();
+        if let (Some(rx), Some(p)) = (rx.as_mut(), producer.as_mut()) {
+            loop {
+                if let Ok(b) = rx.read() {
+                    if !p.write_byte(b) {
+                        rprintln!("DEBUG: buffer full. Byte discarded");
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+    })
 }

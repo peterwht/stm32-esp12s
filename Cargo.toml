@@ -12,6 +12,8 @@ rtt-target = "0.5"
 stm32f1xx-hal = { version = "0.10.0", features = ["stm32f103"] }
 nb = "1.1.0"
 
+ring-buffer = {path = "../ring-buffer"}
+
 [[bin]]
 name = "stm32-esp12s"
 test = false
