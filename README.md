@@ -1,6 +1,6 @@
 # stm32-esp12s
 
-An interrupt-driven HTTP server on an STM32F103 ("Blue Pill"), using an OSOyoo WiFi Shield v1.3 (ESP-12S module) over UART.
+An interrupt-driven HTTP server on an STM32F103 (NUCLEO-F103RB), using an OSOyoo WiFi Shield v1.3 (ESP-12S module) over UART.
 
 The MCU connects to a home network via the ESP8266's AT command interface and listens for inbound HTTP POST requests. Received request bodies are logged over RTT.
 
@@ -18,12 +18,12 @@ The `Esp` struct drives the full lifecycle over AT commands: `AT` handshake → 
 
 ## Hardware
 
-**Board:** STM32F103C8T6 (Blue Pill)  
+**Board:** NUCLEO-F103RB (Nucleo-64)  
 **Shield:** OSOyoo WiFi Shield v1.3 (ESP-12S)
 
 The shield defaults to software UART on D4/D5. Set the jumpers to hardware UART mode (`E_TX↔TX`, `E_RX↔RX`), then run two wires to USART1 (which avoids the ST-Link virtual COM port conflict on USART2):
 
-| Shield pin | Blue Pill pin | USART1 role |
+| Shield pin | Nucleo pin    | USART1 role |
 |------------|---------------|-------------|
 | E_RX       | D8 (PA9)      | TX          |
 | E_TX       | D2 (PA10)     | RX          |
