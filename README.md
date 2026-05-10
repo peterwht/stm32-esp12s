@@ -16,6 +16,12 @@ ESP8266 → USART1 hardware → USART1 ISR → RingBuffer (producer)
 
 The `Esp` struct drives the full lifecycle over AT commands: `AT` handshake → `AT+CWJAP_CUR` WiFi join → `AT+CIFSR` IP fetch → `AT+CIPMUX` + `AT+CIPSERVER` TCP server setup → `+IPD` receive loop.
 
+### Concurrency
+
+The ring buffer's `split()` enforces SPSC at compile time — the borrow checker prevents constructing a second `Producer` or `Consumer`, with no runtime cost.
+
+The producer is shared between `main` (initialization) and the ISR (runtime) via `Mutex<RefCell<Option<Producer>>>`. `Mutex` from `cortex-m` restricts access to critical sections so the ISR cannot preempt `main` mid-access. `RefCell` adds a runtime check ensuring only one mutable borrow of the static is active at a time.
+
 ## Hardware
 
 **Board:** NUCLEO-F103RB (Nucleo-64)  
