@@ -30,20 +30,16 @@ The shield defaults to software UART on D4/D5. Set the jumpers to hardware UART 
 
 ## Building and flashing
 
-Requires a probe (ST-Link v2) and [`probe-rs`](https://probe.rs).
+Requires an ST-Link v2 and [`cargo-embed`](https://probe.rs/docs/tools/cargo-embed/).
 
 ```sh
-# build
-cargo build --release
-
-# flash + attach RTT console
-cargo run --release
+cargo install cargo-embed
 ```
 
-WiFi credentials are passed via environment variables at build time:
+`Embed.toml` configures the target chip and enables RTT. Flash and attach the RTT console in one command:
 
 ```sh
-WIFI_SSID="your-network" WIFI_PASS="your-password" cargo run --release
+WIFI_SSID="your-network" WIFI_PASS="your-password" cargo embed --release
 ```
 
 ## Dependencies
