@@ -65,37 +65,7 @@ impl<USART: Instance> Esp<USART> {
     // TODO: error type
     fn init(&mut self) -> Result<(), ()> {
         self.send(b"AT\r\n");
-        let mut buf = [0u8; 128];
-
-        let mut resp: EspResponse;
-
-        // TODO: improve, timeout, error handling, refactor parsing, etc.
-        loop {
-            let len = self.read_line(&mut buf);
-            let line = &buf[..len];
-
-            resp = Self::parse_line(line);
-            match resp {
-                EspResponse::Ok => {
-                    rprintln!("OK");
-                    break;
-                }
-                EspResponse::Error => {
-                    rprintln!("ERROR");
-                    break;
-                }
-                EspResponse::Fail => {
-                    rprintln!("FAIL");
-                    break;
-                }
-                EspResponse::WifiGotIp => {
-                    rprintln!("WIFI GOT IP");
-                }
-                EspResponse::Other => {}
-                _ => {}
-            }
-        }
-
+        self.wait_for_ok();
         Ok(())
     }
 
@@ -107,43 +77,11 @@ impl<USART: Instance> Esp<USART> {
         self.send(b"\"\r\n");
         rprintln!("Sent: CWJAP");
 
-        // TODO: dry
-
-        let mut buf = [0u8; 128];
-
-        let mut resp: EspResponse;
-
-        // TODO: improve, timeout, error handling, refactor parsing, etc.
-        loop {
-            let len = self.read_line(&mut buf);
-            let line = &buf[..len];
-
-            resp = Self::parse_line(line);
-            match resp {
-                EspResponse::Ok => {
-                    rprintln!("OK");
-                    break;
-                }
-                EspResponse::Error => {
-                    rprintln!("ERROR");
-                    break;
-                }
-                EspResponse::Fail => {
-                    rprintln!("FAIL");
-                    break;
-                }
-                EspResponse::WifiGotIp => {
-                    rprintln!("WIFI GOT IP");
-                }
-                EspResponse::Other => {}
-                _ => {}
-            }
-        }
-
-        if !matches!(resp, EspResponse::Ok) {
+        if !matches!(self.wait_for_ok(), EspResponse::Ok) {
             return Err(());
         }
 
+        let mut buf = [0u8; 128];
         self.send(b"AT+CIFSR\r\n");
         loop {
             let len = self.read_line(&mut buf);
@@ -156,10 +94,8 @@ impl<USART: Instance> Esp<USART> {
                         core::str::from_utf8(&ip[0..ip_len]).unwrap_or("?")
                     );
                 }
-                EspResponse::Ok => {
-                    break;
-                }
-                _ => {} // TODO: not handling errors
+                EspResponse::Ok => break,
+                _ => {}
             }
         }
 
@@ -168,31 +104,37 @@ impl<USART: Instance> Esp<USART> {
 
     fn configure_server(&mut self, port: &[u8]) {
         self.send(b"AT+CIPMUX=1\r\n");
-
-        let mut buf = [0u8; 128];
-        let mut resp: EspResponse;
-
-        loop {
-            let len = self.read_line(&mut buf);
-            let line = &buf[..len];
-
-            resp = Self::parse_line(line);
-            if let EspResponse::Ok = resp {
-                break;
-            }
-        }
+        self.wait_for_ok();
 
         self.send(b"AT+CIPSERVER=1,");
         self.send(&port);
         self.send(b"\r\n");
+        self.wait_for_ok();
+    }
 
+    // Reads lines until OK, ERROR, or FAIL. Logs intermediate status responses.
+    fn wait_for_ok(&mut self) -> EspResponse {
+        let mut buf = [0u8; 128];
         loop {
             let len = self.read_line(&mut buf);
-            let line = &buf[..len];
-
-            resp = Self::parse_line(line);
-            if let EspResponse::Ok = resp {
-                break;
+            let resp = Self::parse_line(&buf[..len]);
+            match resp {
+                EspResponse::Ok => {
+                    rprintln!("OK");
+                    return resp;
+                }
+                EspResponse::Error => {
+                    rprintln!("ERROR");
+                    return resp;
+                }
+                EspResponse::Fail => {
+                    rprintln!("FAIL");
+                    return resp;
+                }
+                EspResponse::WifiGotIp => {
+                    rprintln!("WIFI GOT IP");
+                }
+                _ => {}
             }
         }
     }
